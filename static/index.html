@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.1.2/adapter.min.js"
+    integrity="sha512-l40eBFtXx+ve5RryIELC3y6/OM6Nu89mLGQd7fg1C93tN6XrkC3supb+/YiD/Y+B8P37kdJjtG1MT1kOO2VzxA=="
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+</head>
+
+<body>
+  <div class="grid">
+    <h1>Calls Demo</h1>
+    <input id="usrName" type="text" value="Test1">
+    <button id="create-room">Create Room</button>
+    <button id="get-peer-video">Demo Get peer video call</button>
+    <input id="room_id_join" type="text">
+    <button id="join_room">Join Room</button>
+    <div>
+      <p id="count_participants">Số người tham gia:</p>
+    </div>
+    <div>
+      <h2>Local stream</h2>
+      <video id="local-video" autoplay muted></video>
+      <button id="toggle-mic">Tắt mic</button>
+      <button id="toggle-camera">Tắt camera</button>
+    </div>
+    <div>
+      <h2>Remote echo stream</h2>
+      <video id="remote-video" autoplay></video>
+    </div>
+  </div>
+
+  <script type="module">
+    const appId = '731e0a4787f65a16e604a685bda2d9f5';
+
+    class CallsApp {
+      constructor(basePath = 'http://localhost:8080') {
+        this.prefixPath = `${basePath}`;
+      }
+
+      async sendRequest(url, body, method = 'POST') {
+        const request = {
+          method: method,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        };
+
+        const response = await fetch(url, request);
+
+        if (!response.ok) {
+          // Nếu mã trạng thái không phải 2xx, xử lý lỗi
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+
+        // Kiểm tra nếu response là JSON trước khi parse
+        try {
+          const result = await response.json();
+          return result;
+        } catch (error) {
+          throw new Error('Failed to parse JSON: ' + error.message);
+        }
+      }
+
+
+      // newSession sends the initial offer and creates a session
+      async newSession(offerSDP) {
+        console.log(offerSDP, typeof (offerSDP));
+        const url = `${this.prefixPath}/sessions/new`;
+        const body = {
+          sdp: offerSDP,
+        };
+        const result = await this.sendRequest(url, body);
+        this.sessionId = result.sessionId;
+        console.log("sessionID: ", this.sessionId);
+        return result;
+      }
+
+      // newTracks shares local tracks or gets tracks
+      async newTracks(trackObjects, offerSDP = null) {
+        const url = `${this.prefixPath}/sessions/tracks/new/?sessionId=${this.sessionId}`;
+        const body = {
+          sessionDescription: {
+            type: 'offer',
+            sdp: offerSDP
+          },
+          tracks: trackObjects
+        };
+        if (!offerSDP) {
+          delete body['sessionDescription'];
+        }
+        console.log("Body tracks:", body);
+        const result = await this.sendRequest(url, body);
+        console.log(result);
+        return result;
+      }
+      async GetnewTracks(peer_ssid) {
+        const url = `${this.prefixPath}/sessions/tracks/getNew/?sessionId=${this.sessionId}`;
+        const body = {
+          session_id: peer_ssid
+        };
+        console.log("Body tracks Get:", body);
+        const result = await this.sendRequest(url, body);
+        console.log(result);
+        return result;
+      }
+
+      // sendAnswerSDP sends an answer SDP if a renegotiation is required
+      async sendAnswerSDP(answer) {
+        const url = `http://localhost:8080/sessions/renegotiate/?sessionId=${this.sessionId}`;
+        const body = {
+          sdp: answer,
+        };
+        const result = await this.sendRequest(url, body, 'PUT');
+      }
+    }
+    //end class
+
+
+    // Create an RTCPeerConnection with Cloudflare's STUN server
+    self.pc = new RTCPeerConnection({
+      iceServers: [
+        {
+          urls: 'stun:stun.cloudflare.com:3478',
+        },
+      ],
+      bundlePolicy: 'max-bundle',
+    });
+
+    // Get local media stream (video and audio)
+    const localStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+
+    // Get the local video element and set the source to the local stream
+    const localVideoElement = document.getElementById('local-video');
+    localVideoElement.srcObject = localStream;
+
+    // Add sendonly transceivers to the PeerConnection
+    self.transceivers = localStream.getTracks().map(track =>
+      self.pc.addTransceiver(track, {
+        direction: 'sendonly',
+      })
+    );
+
+    // Create an instance of CallsApp (defined below)
+    self.app = new CallsApp();
+
+    // Send the first offer and create a session
+    await self.pc.setLocalDescription(await self.pc.createOffer());
+    const newSessionResult = await self.app.newSession(self.pc.localDescription.sdp);
+    await self.pc.setRemoteDescription(new RTCSessionDescription(newSessionResult.sessionDescription));
+
+    // Wait until the peer connection is established
+    await new Promise((resolve, reject) => {
+      self.pc.addEventListener('iceconnectionstatechange', ev => {
+        if (ev.target.iceConnectionState === 'connected') {
+          resolve();
+        }
+        setTimeout(reject, 5000, 'connect timeout');
+      });
+    });
+
+
+
+    // Associate trackName to transceiver mid
+    const trackObjects = self.transceivers.map(transceiver => {
+      return {
+        location: 'local',
+        mid: transceiver.mid,
+        trackName: transceiver.sender.track.id,
+      };
+    });
+
+    // Send tracks to server (this is where we send the local tracks)
+    // Get local description, create a new track, set remote description with the response
+    await self.pc.setLocalDescription(await self.pc.createOffer());
+    const newLocalTracksResult = await self.app.newTracks(
+      trackObjects,
+      self.pc.localDescription.sdp
+    );
+    await self.pc.setRemoteDescription(
+      new RTCSessionDescription(newLocalTracksResult.sessionDescription)
+    );
+    //
+    // gửi username đã nhập + sessionID  track0 track1 đến POST /register:
+    //sessionID là self.app.sessionId
+    //track0, 1 là trackObjects[0 hoặc 1].trackName
+    const usrnameElement = document.getElementById('usrName');  // Input chứa username
+    const username = usrnameElement ? usrnameElement.value : '';  // Lấy giá trị nếu có
+
+    if (username && self.app && trackObjects.length >= 2) {
+      const sessionID = self.app.sessionId;  // SessionID từ app
+      const track0 = trackObjects[0].trackName;  // Tên track 0
+      const track1 = trackObjects[1].trackName;  // Tên track 1
+
+      // Dữ liệu gửi đến server
+      const userData = {
+        id: sessionID,
+        user_name: username,
+        track_0: track0,
+        track_1: track1
+      };
+
+      // Thực hiện gửi dữ liệu ngay lập tức
+      fetch('http://localhost:8080/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(userData)
+      })
+        .then(response => response.json())
+        .then(result => {
+          if (result.message) {
+            console.log(result.message, result.user);
+          } else {
+            console.error('Error:', result.error);
+          }
+        })
+        .catch(error => {
+          console.error('Fetch error:', error);
+        });
+    } else {
+      console.error('Missing required data for registration.');
+    }
+
+    // Bây giờ là đã đưa dữ liệu lên Cloudflare calls
+    //Chức năng tạo phòng-------------------------
+    let my_room = "";
+    document.getElementById('create-room').addEventListener('click', function () {
+      const userID = self.app.sessionId;
+      if (userID) {
+        const requestData = {
+          user_id: userID
+        };
+
+        fetch('http://localhost:8080/create-room', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(requestData)
+        })
+          .then(response => response.json())
+          .then(data => {
+            if (data.error) {
+              alert('Lỗi: ' + data.error);
+            } else {
+              console.log(data.room_id);
+              my_room = data.room_id;
+              alert('Phòng được tạo thành công! Room ID: ' + data.room_id);
+            }
+          })
+          .catch(error => {
+            console.error('Error:', error);
+            alert('Đã xảy ra lỗi khi tạo phòng.');
+          });
+      } else {
+        alert('Vui lòng nhập Room ID và User ID.');
+      }
+    });
+
+    //-------------------------------------------
+    /*
+    document.getElementById('get-peer-video').addEventListener('click',async function(){
+      //ví dụ gọi đến server để get danh sách các peer trong room id
+    
+      // demo lấy 1 peer có sẵn
+      // Prepare to receive the tracks before asking for them
+      const remoteTracksPromise = new Promise(resolve => {
+            let tracks = [];
+            self.pc.ontrack = event => {
+              tracks.push(event.track);
+              console.debug(`Got track mid=${event.track.mid}`);
+              if (tracks.length >= 2) {
+                // remote video & audio are ready
+                resolve(tracks);
+              }
+            };
+          });
+      // Calls API request to ask for the tracks
+      const peer_ssid = "f936af6f8194d924c30f80194428c578"; // sessionid của peer mới join vào nhận được từ server
+      const newRemoteTracksResult = await self.app.GetnewTracks(peer_ssid);
+          if (newRemoteTracksResult.requiresImmediateRenegotiation) {
+            switch (newRemoteTracksResult.sessionDescription.type) {
+              case 'offer':
+                // We let Cloudflare know we're ready to receive the tracks
+                await self.pc.setRemoteDescription(
+                  new RTCSessionDescription(
+                    newRemoteTracksResult.sessionDescription
+                  )
+                );
+                await self.pc.setLocalDescription(await self.pc.createAnswer());
+                await self.app.sendAnswerSDP(self.pc.localDescription.sdp);
+                break;
+              case 'answer':
+                throw new Error('An offer SDP was expected');
+            }
+          }
+      // Once started receiving the tracks (video & audio) send the data to the video tag
+      const remoteTracks = await remoteTracksPromise;
+          const remoteVideoElement = document.getElementById('remote-video');
+          const remoteStream = new MediaStream();
+          remoteStream.addTrack(remoteTracks[0]);
+          remoteStream.addTrack(remoteTracks[1]);
+          remoteVideoElement.srcObject = remoteStream;
+    
+    });
+    */
+    async function AddNewTrackFromRemote(peer_ssid) {
+      const remoteTracksPromise = new Promise((resolve) => {
+        let tracks = [];
+        self.pc.ontrack = (event) => {
+          tracks.push(event.track);
+          console.debug(`Got track mid=${event.track.mid}`);
+          if (tracks.length >= 2) {
+            // remote video & audio are ready
+            resolve(tracks);
+          }
+        };
+      });
+
+      // Gọi API để lấy các track từ peer mới
+      const newRemoteTracksResult = await self.app.GetnewTracks(peer_ssid);
+      if (newRemoteTracksResult.requiresImmediateRenegotiation) {
+        switch (newRemoteTracksResult.sessionDescription.type) {
+          case "offer":
+            // Xử lý SDP từ server
+            await self.pc.setRemoteDescription(
+              new RTCSessionDescription(newRemoteTracksResult.sessionDescription)
+            );
+            await self.pc.setLocalDescription(await self.pc.createAnswer());
+            await self.app.sendAnswerSDP(self.pc.localDescription.sdp);
+            break;
+          case "answer":
+            throw new Error("An offer SDP was expected");
+        }
+      }
+
+      const remoteTracks = await remoteTracksPromise;
+
+      // Tạo phần tử div mới
+      const videoContainer = document.createElement("div");
+
+      // Tạo tiêu đề cho video container (tùy chọn)
+      const title = document.createElement("h2");
+      title.textContent = `Remote peer ${peer_ssid}`;
+      videoContainer.appendChild(title);
+
+      // Tạo phần tử video mới
+      const remoteVideoElement = document.createElement("video");
+      remoteVideoElement.id = `remote-video-${peer_ssid}`;
+      remoteVideoElement.autoplay = true;
+
+      // Thêm video vào container
+      videoContainer.appendChild(remoteVideoElement);
+
+      // Tìm phần tử chứa video trong DOM
+      const gridContainer = document.querySelector(".grid");
+
+      // Kiểm tra xem phần tử chứa video có tồn tại hay không
+      if (gridContainer) {
+        gridContainer.appendChild(videoContainer);
+      } else {
+        console.error("Không tìm thấy phần tử chứa video trong DOM");
+      }
+
+      // Tạo MediaStream và thêm các track
+      const remoteStream = new MediaStream();
+      remoteStream.addTrack(remoteTracks[0]);
+      remoteStream.addTrack(remoteTracks[1]);
+
+      // Gán stream vào video
+      remoteVideoElement.srcObject = remoteStream;
+    }
+    //----------
+    const socket = new WebSocket("ws://localhost:8080/api/ws?user_id=" + self.app.sessionId); // Kết nối WebSocket
+
+    // Lắng nghe sự kiện khi WebSocket được mở
+    socket.addEventListener("open", () => {
+      console.log("WebSocket connection established.");
+    });
+
+    // Lắng nghe sự kiện khi nhận được message từ server
+    socket.addEventListener("message", async (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "new_peer_joined") {
+          console.log("New peer joined:", data.user);
+
+          // Gọi hàm nhận track từ peer mới
+          const peer_ssid = data.user.id; // sessionID của peer mới tham gia
+          //func
+          await AddNewTrackFromRemote(peer_ssid);
+        } else if(data.type === "count_partis") {
+          const count = data.count;
+          const count_parti_element = document.getElementById("count_participants");
+          count_parti_element.innerText = `Số người tham gia: ${count}`;
+
+        }
+      } catch (error) {
+        console.error("Error processing WebSocket message:", error);
+      }
+    });
+
+    // Lắng nghe sự kiện đóng kết nối WebSocket
+    socket.addEventListener("close", () => {
+      console.log("WebSocket connection closed.");
+    });
+
+    // Lắng nghe sự kiện lỗi kết nối WebSocket
+    socket.addEventListener("error", (error) => {
+      console.error("WebSocket error:", error);
+    });
+    // join room:
+    const room_id_input = document.getElementById("room_id_join");
+    const join_room_btn = document.getElementById("join_room");
+    join_room_btn.addEventListener("click", async function () {
+      const room_id = room_id_input.value; // Lấy giá trị room_id từ input
+      const user_id = self.app.sessionId; // Lấy sessionId từ self.app
+
+      if (!room_id) {
+        alert("Please enter a Room ID.");
+        return;
+      }
+
+      try {
+        // Thực hiện gọi API POST
+        const response = await fetch("http://localhost:8080/join-room", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            room_id: room_id,
+            user_id: user_id,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          alert(`Error: ${errorData.error}`);
+          return;
+        }
+
+        const data = await response.json();
+        console.log("Joined room successfully:", data);
+        alert(`Successfully joined room: ${data.room_id}`);
+        const userList = data.userlist;  // giả sử data.users là mảng ID người dùng
+
+        if (Array.isArray(userList)) {
+          for (let peer_ssid of userList) {
+            // Nếu peer_ssid không phải là bản thân (self.app.sessionId)
+            if (peer_ssid !== self.app.sessionId) {
+              console.log("Adding new track for:", peer_ssid);  // Kiểm tra ID đang xử lý
+              await AddNewTrackFromRemote(peer_ssid);
+            }
+          }
+        } else {
+          console.error("userList is not an array:", userList);
+        }
+
+      } catch (error) {
+        console.error("Error joining room:", error);
+        alert("Failed to join room. Please try again.");
+      }
+    });
+
+
+    //Device
+    // Get the video element and buttons
+const localVideo = document.getElementById("local-video");
+const toggleMicBtn = document.getElementById("toggle-mic");
+const toggleCameraBtn = document.getElementById("toggle-camera");
+
+// Assuming you already have access to the local stream
+
+
+
+// Function to toggle the microphone
+toggleMicBtn.addEventListener("click", () => {
+  const currentTrack = localStream.getAudioTracks()[0]; // Get the audio track
+  if (currentTrack.enabled) {
+    currentTrack.enabled = false; // Disable mic
+    toggleMicBtn.innerText = "Bật mic";
+  } else {
+    currentTrack.enabled = true; // Enable mic
+    toggleMicBtn.innerText = "Tắt mic";
+  }
+});
+
+// Function to toggle the camera
+toggleCameraBtn.addEventListener("click", () => {
+  const currentTrack = localStream.getVideoTracks()[0]; // Get the video track
+  if (currentTrack.enabled) {
+    currentTrack.enabled = false; // Disable camera
+    toggleCameraBtn.innerText = "Bật camera";
+  } else {
+    currentTrack.enabled = true; // Enable camera
+    toggleCameraBtn.innerText = "Tắt camera";
+  }
+});
+
+
+  </script>
+</body>
+
+</html>
