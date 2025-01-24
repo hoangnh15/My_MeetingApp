@@ -17,6 +17,7 @@
     <button id="get-peer-video">Demo Get peer video call</button>
     <input id="room_id_join" type="text">
     <button id="join_room">Join Room</button>
+    <button id="leave">Leave room</button>
     <div>
       <p id="count_participants">Số người tham gia:</p>
     </div>
@@ -36,7 +37,7 @@
     const appId = '731e0a4787f65a16e604a685bda2d9f5';
 
     class CallsApp {
-      constructor(basePath = 'http://localhost:8080') {
+      constructor(basePath = ' https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app') {
         this.prefixPath = `${basePath}`;
       }
 
@@ -110,12 +111,15 @@
 
       // sendAnswerSDP sends an answer SDP if a renegotiation is required
       async sendAnswerSDP(answer) {
-        const url = `http://localhost:8080/sessions/renegotiate/?sessionId=${this.sessionId}`;
+        const url = ` https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/sessions/renegotiate/?sessionId=${this.sessionId}`;
         const body = {
           sdp: answer,
         };
         const result = await this.sendRequest(url, body, 'PUT');
+        console.log("Send answer: ", result);
       }
+
+
     }
     //end class
 
@@ -207,7 +211,7 @@
       };
 
       // Thực hiện gửi dữ liệu ngay lập tức
-      fetch('http://localhost:8080/register', {
+      fetch('https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -239,7 +243,7 @@
           user_id: userID
         };
 
-        fetch('http://localhost:8080/create-room', {
+        fetch('https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/create-room', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -266,52 +270,6 @@
     });
 
     //-------------------------------------------
-    /*
-    document.getElementById('get-peer-video').addEventListener('click',async function(){
-      //ví dụ gọi đến server để get danh sách các peer trong room id
-    
-      // demo lấy 1 peer có sẵn
-      // Prepare to receive the tracks before asking for them
-      const remoteTracksPromise = new Promise(resolve => {
-            let tracks = [];
-            self.pc.ontrack = event => {
-              tracks.push(event.track);
-              console.debug(`Got track mid=${event.track.mid}`);
-              if (tracks.length >= 2) {
-                // remote video & audio are ready
-                resolve(tracks);
-              }
-            };
-          });
-      // Calls API request to ask for the tracks
-      const peer_ssid = "f936af6f8194d924c30f80194428c578"; // sessionid của peer mới join vào nhận được từ server
-      const newRemoteTracksResult = await self.app.GetnewTracks(peer_ssid);
-          if (newRemoteTracksResult.requiresImmediateRenegotiation) {
-            switch (newRemoteTracksResult.sessionDescription.type) {
-              case 'offer':
-                // We let Cloudflare know we're ready to receive the tracks
-                await self.pc.setRemoteDescription(
-                  new RTCSessionDescription(
-                    newRemoteTracksResult.sessionDescription
-                  )
-                );
-                await self.pc.setLocalDescription(await self.pc.createAnswer());
-                await self.app.sendAnswerSDP(self.pc.localDescription.sdp);
-                break;
-              case 'answer':
-                throw new Error('An offer SDP was expected');
-            }
-          }
-      // Once started receiving the tracks (video & audio) send the data to the video tag
-      const remoteTracks = await remoteTracksPromise;
-          const remoteVideoElement = document.getElementById('remote-video');
-          const remoteStream = new MediaStream();
-          remoteStream.addTrack(remoteTracks[0]);
-          remoteStream.addTrack(remoteTracks[1]);
-          remoteVideoElement.srcObject = remoteStream;
-    
-    });
-    */
     async function AddNewTrackFromRemote(peer_ssid) {
       const remoteTracksPromise = new Promise((resolve) => {
         let tracks = [];
@@ -346,7 +304,7 @@
 
       // Tạo phần tử div mới
       const videoContainer = document.createElement("div");
-
+      videoContainer.id = `peer-video-${peer_ssid}`;
       // Tạo tiêu đề cho video container (tùy chọn)
       const title = document.createElement("h2");
       title.textContent = `Remote peer ${peer_ssid}`;
@@ -379,7 +337,7 @@
       remoteVideoElement.srcObject = remoteStream;
     }
     //----------
-    const socket = new WebSocket("ws://localhost:8080/api/ws?user_id=" + self.app.sessionId); // Kết nối WebSocket
+    const socket = new WebSocket("wss://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/api/ws?user_id=" + self.app.sessionId); // Kết nối WebSocket
 
     // Lắng nghe sự kiện khi WebSocket được mở
     socket.addEventListener("open", () => {
@@ -398,11 +356,28 @@
           const peer_ssid = data.user.id; // sessionID của peer mới tham gia
           //func
           await AddNewTrackFromRemote(peer_ssid);
-        } else if(data.type === "count_partis") {
+        } else if (data.type === "count_partis") {
           const count = data.count;
           const count_parti_element = document.getElementById("count_participants");
           count_parti_element.innerText = `Số người tham gia: ${count}`;
 
+        } else if (data.type === "a-peer-left") {
+          // Lấy userId từ dữ liệu trả về
+          const userId = data.userId;
+
+          // Xác định id của videoContainer tương ứng với peer vừa rời đi
+          const videoContainerId = `peer-video-${userId}`;
+
+          // Tìm phần tử videoContainer trong DOM
+          const videoContainer = document.getElementById(videoContainerId);
+
+          // Nếu tồn tại, xóa phần tử videoContainer
+          if (videoContainer) {
+            videoContainer.remove();
+            console.log(`Removed video container for peer with ID: ${userId}`);
+          } else {
+            console.warn(`No video container found for peer with ID: ${userId}`);
+          }
         }
       } catch (error) {
         console.error("Error processing WebSocket message:", error);
@@ -424,6 +399,7 @@
     join_room_btn.addEventListener("click", async function () {
       const room_id = room_id_input.value; // Lấy giá trị room_id từ input
       const user_id = self.app.sessionId; // Lấy sessionId từ self.app
+      my_room = room_id;
 
       if (!room_id) {
         alert("Please enter a Room ID.");
@@ -432,7 +408,7 @@
 
       try {
         // Thực hiện gọi API POST
-        const response = await fetch("http://localhost:8080/join-room", {
+        const response = await fetch("https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/join-room", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -475,37 +451,67 @@
 
     //Device
     // Get the video element and buttons
-const localVideo = document.getElementById("local-video");
-const toggleMicBtn = document.getElementById("toggle-mic");
-const toggleCameraBtn = document.getElementById("toggle-camera");
+    const localVideo = document.getElementById("local-video");
+    const toggleMicBtn = document.getElementById("toggle-mic");
+    const toggleCameraBtn = document.getElementById("toggle-camera");
 
-// Assuming you already have access to the local stream
+    // Assuming you already have access to the local stream
 
 
 
-// Function to toggle the microphone
-toggleMicBtn.addEventListener("click", () => {
-  const currentTrack = localStream.getAudioTracks()[0]; // Get the audio track
-  if (currentTrack.enabled) {
-    currentTrack.enabled = false; // Disable mic
-    toggleMicBtn.innerText = "Bật mic";
-  } else {
-    currentTrack.enabled = true; // Enable mic
-    toggleMicBtn.innerText = "Tắt mic";
-  }
-});
+    // Function to toggle the microphone
+    toggleMicBtn.addEventListener("click", () => {
+      const currentTrack = localStream.getAudioTracks()[0]; // Get the audio track
+      if (currentTrack.enabled) {
+        currentTrack.enabled = false; // Disable mic
+        toggleMicBtn.innerText = "Bật mic";
+      } else {
+        currentTrack.enabled = true; // Enable mic
+        toggleMicBtn.innerText = "Tắt mic";
+      }
+    });
 
-// Function to toggle the camera
-toggleCameraBtn.addEventListener("click", () => {
-  const currentTrack = localStream.getVideoTracks()[0]; // Get the video track
-  if (currentTrack.enabled) {
-    currentTrack.enabled = false; // Disable camera
-    toggleCameraBtn.innerText = "Bật camera";
-  } else {
-    currentTrack.enabled = true; // Enable camera
-    toggleCameraBtn.innerText = "Tắt camera";
-  }
-});
+    // Function to toggle the camera
+    toggleCameraBtn.addEventListener("click", () => {
+      const currentTrack = localStream.getVideoTracks()[0]; // Get the video track
+      if (currentTrack.enabled) {
+        currentTrack.enabled = false; // Disable camera
+        toggleCameraBtn.innerText = "Bật camera";
+      } else {
+        currentTrack.enabled = true; // Enable camera
+        toggleCameraBtn.innerText = "Tắt camera";
+      }
+    });
+
+    document.getElementById('leave').addEventListener('click', function () {
+      // Gửi yêu cầu lên server bằng fetch
+    fetch(`https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/sessions/TestCloseTrack/?user_id=${self.app.sessionId}&room_id=${my_room}`, { 
+        method: 'GET',
+    })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to leave the room');
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Leave response from server:', data);
+            if (data.message === "User left the room successfully") {
+               /* // Điều hướng về trang chủ hoặc thực hiện hành động khác
+                window.location.href = '/home'; // Redirect về trang chính (hoặc nơi bạn muốn) */
+                alert("Left the room");
+                const peerDivs = document.querySelectorAll('[id^="peer-video-"]'); // Chọn tất cả các div có id bắt đầu bằng 'peer-video-'
+                peerDivs.forEach(div => div.remove());
+                const count_parti_element = document.getElementById("count_participants");
+                count_parti_element.innerText = `Số người tham gia:--`;
+            } else {
+                alert(data.message || 'An error occurred while leaving the room');
+            }
+        })
+        .catch(error => {
+            console.error('Error while leaving the room:', error);
+        });
+    });
 
 
   </script>

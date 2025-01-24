@@ -301,6 +301,79 @@ func renegotiateSession(c *gin.Context) {
 }
 
 // ----------------------------
+func getSessionId(c *gin.Context) {
+	handleCORS(c)
+	sessionId := c.DefaultQuery("sessionId", "")
+	url := fmt.Sprintf("%s/apps/%s/sessions/%s", cloudflareAPIBase, appId, sessionId)
+	const body = ""
+	respBody, err := sendRequest(url, "GET", body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Error renegotiating session: %v", err)})
+		return
+	}
+
+	// Gửi kết quả trả về từ Cloudflare về client
+	c.Data(http.StatusOK, "application/json", respBody)
+}
+
+func leaveRoom(c *gin.Context) {
+	handleCORS(c)
+
+	// Retrieve user ID and room ID
+	userID := c.Query("user_id")
+	roomID := c.Query("room_id")
+
+	if userID == "" || roomID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id and room_id are required"})
+		return
+	}
+
+	// Remove user from room
+	usersInRoom, exists := rooms[roomID]
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Room not found"})
+		return
+	}
+
+	for i, user := range usersInRoom {
+		if user.ID == userID {
+			rooms[roomID] = append(usersInRoom[:i], usersInRoom[i+1:]...)
+			delete(users, userID) // Remove user from global map
+			break
+		}
+	}
+
+	// Notify remaining users in the room (if WebSocket is implemented)
+	for _, u := range rooms[roomID] {
+		if conn, ok := clients[u.ID]; ok {
+			notification := gin.H{
+				"type":    "a-peer-left",
+				"message": "A peer has been left",
+				"userId":  userID,
+			}
+			if err := conn.WriteJSON(notification); err != nil {
+				fmt.Println("Failed to notify user:", u.ID, err)
+			}
+
+		}
+		for _, u := range rooms[roomID] {
+			if conn, ok := clients[u.ID]; ok {
+				notification := gin.H{
+					"type":    "count_partis",
+					"message": "Number of member of the room",
+					"count":   countUsersInRoom(roomID),
+				}
+				if err := conn.WriteJSON(notification); err != nil {
+					fmt.Println("Failed to notify user:", u.ID, err)
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User left the room successfully"})
+}
+
+// -----------------------------
 func main() {
 	r := gin.Default()
 
@@ -309,6 +382,8 @@ func main() {
 	r.POST("/sessions/tracks/new", addTrack)
 	r.POST("/sessions/tracks/getNew", getTrack)
 	r.PUT("/sessions/renegotiate", renegotiateSession)
+	r.GET("/sessions/sessionId", getSessionId)
+	r.GET("/sessions/TestCloseTrack", leaveRoom)
 	//
 	r.POST("/register", func(c *gin.Context) {
 		var user User
