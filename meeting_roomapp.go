@@ -33,8 +33,20 @@ type User struct {
 	Track1   string `json:"track_1"`
 }
 
+// UserShare lưu thông tin chia sẻ màn hình của 1 user
+type UserShare struct {
+	ID     string `json:"id"`      // session id, cũng coi là user id
+	Track0 string `json:"track_0"` // tên track 0
+	Track1 string `json:"track_1"` // tên track 1
+}
+
+// RoomShares quản lý thông tin chia sẻ màn hình theo room.
+// Key: room id, Value: map từ user id đến thông tin UserShare.
+var roomShares = make(map[string]map[string]UserShare)
+
 // In-memory storage for simplicity (replace with a database in production)
-var users = make(map[string]User)   // Maps user ID to user
+var users = make(map[string]User) // Maps user ID to user
+var userShares = make(map[string]UserShare)
 var rooms = make(map[string][]User) // Maps room ID to users
 var clients = make(map[string]*websocket.Conn)
 var upgrader = websocket.Upgrader{
@@ -223,31 +235,63 @@ func getTrack(c *gin.Context) {
 	}
 	var requestData struct {
 		SessionID string `json:"session_id"`
+		Type      string `json:"type"`
 	}
 	if err := c.ShouldBindJSON(&requestData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
 		return
 	}
 	peerSessionID := requestData.SessionID
+	reqType := requestData.Type
+	var trackObjects []map[string]string
 
-	// Truy xuất user từ peerSessionID
-	user, exists := users[peerSessionID]
-	if !exists {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+	if reqType == "normal" {
+		// Xử lý kiểu normal: truy xuất từ map users
+		user, exists := users[peerSessionID]
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": fmt.Sprintf("User not found: %s", peerSessionID),
+			})
+			return
+		}
+
+		trackObjects = []map[string]string{
+			{
+				"location":  "remote",
+				"sessionId": user.ID,
+				"trackName": user.Track0,
+			},
+			{
+				"location":  "remote",
+				"sessionId": user.ID,
+				"trackName": user.Track1,
+			},
+		}
+	} else if reqType == "screen" {
+		// Xử lý kiểu screen: truy xuất từ map userShares
+		userShare, exists := userShares[peerSessionID]
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": fmt.Sprintf("UserShare not found: %s", peerSessionID),
+			})
+			return
+		}
+
+		trackObjects = []map[string]string{
+			{
+				"location":  "remote",
+				"sessionId": userShare.ID,
+				"trackName": userShare.Track0,
+			},
+			{
+				"location":  "remote",
+				"sessionId": userShare.ID,
+				"trackName": userShare.Track1,
+			},
+		}
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid type provided; expected 'normal' or 'screen'"})
 		return
-	}
-
-	trackObjects := []map[string]string{
-		{
-			"location":  "remote",
-			"sessionId": user.ID,
-			"trackName": user.Track0,
-		},
-		{
-			"location":  "remote",
-			"sessionId": user.ID,
-			"trackName": user.Track1,
-		},
 	}
 	body := map[string]interface{}{
 		"tracks": trackObjects,
@@ -338,7 +382,6 @@ func leaveRoom(c *gin.Context) {
 	for i, user := range usersInRoom {
 		if user.ID == userID {
 			rooms[roomID] = append(usersInRoom[:i], usersInRoom[i+1:]...)
-			delete(users, userID) // Remove user from global map
 			break
 		}
 	}
@@ -462,6 +505,7 @@ func main() {
 
 		user, exists := users[joinReq.UserID]
 		if !exists {
+			fmt.Println("Not found User join:", joinReq.UserID)
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 			return
 		}
@@ -503,33 +547,115 @@ func main() {
 		for _, u := range rooms[joinReq.RoomID] {
 			userList = append(userList, u.ID)
 		}
+		var shareScreenUserList []string
+		if shareMap, exists := roomShares[joinReq.RoomID]; exists {
+			for id := range shareMap {
+				shareScreenUserList = append(shareScreenUserList, id)
+			}
+		}
 		// Trả về phản hồi cho client mới
-		c.JSON(http.StatusOK, gin.H{"message": "User joined room successfully", "room_id": joinReq, "userlist": userList})
+		c.JSON(http.StatusOK, gin.H{"message": "User joined room successfully", "room_id": joinReq, "userlist": userList, "shareScreenUsers": shareScreenUserList})
 	})
 
-	r.POST("/leave-room", func(c *gin.Context) {
-		type LeaveRoomRequest struct {
-			RoomID string `json:"room_id"`
-			UserID string `json:"user_id"`
+	r.POST("/ShareScreen", func(c *gin.Context) {
+		var userData struct {
+			ID     string `json:"id"`
+			RoomID string `json:"roomid"`
+			Track0 string `json:"track_0"`
+			Track1 string `json:"track_1"`
 		}
-		var leaveReq LeaveRoomRequest
-		if err := c.ShouldBindJSON(&leaveReq); err != nil {
+		if err := c.ShouldBindJSON(&userData); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if _, exists := users[leaveReq.UserID]; !exists {
-			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-			return
+
+		// Lưu thông tin chia sẻ màn hình vào map userShares
+		userShares[userData.ID] = UserShare{
+			ID:     userData.ID,
+			Track0: userData.Track0,
+			Track1: userData.Track1,
 		}
-		// Remove user from the room
-		for i, user := range rooms[leaveReq.RoomID] {
-			if user.ID == leaveReq.UserID {
-				rooms[leaveReq.RoomID] = append(rooms[leaveReq.RoomID][:i], rooms[leaveReq.RoomID][i+1:]...)
-				break
+
+		// Kiểm tra và khởi tạo map cho room nếu cần
+		if _, exists := roomShares[userData.RoomID]; !exists {
+			roomShares[userData.RoomID] = make(map[string]UserShare)
+		}
+		roomShares[userData.RoomID][userData.ID] = UserShare{
+			ID:     userData.ID,
+			Track0: userData.Track0,
+			Track1: userData.Track1,
+		}
+
+		fmt.Printf("RoomShares updated for room %s: %+v\n", userData.RoomID, roomShares[userData.RoomID])
+
+		// Gửi thông báo tới các client trong room (trừ người mới)
+		for _, u := range rooms[userData.RoomID] {
+			if u.ID != userData.ID {
+				if conn, ok := clients[u.ID]; ok {
+					notification := gin.H{
+						"type":    "new_share_screen",
+						"message": "New user share screen for the room",
+						"user":    userData,
+					}
+					if err := conn.WriteJSON(notification); err != nil {
+						fmt.Println("Failed to notify user:", u.ID, err)
+					}
+				}
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "User left room successfully", "room_id": leaveReq.RoomID})
+		c.JSON(http.StatusOK, gin.H{"message": "User share screen successfully", "room_id": userData.RoomID})
 	})
+	//
+	r.POST("/StopShareScreen", func(c *gin.Context) {
+		// Định nghĩa kiểu nhận request JSON
+		var requestData struct {
+			UserID string `json:"user_id"`
+			RoomID string `json:"room_id"`
+		}
+
+		// Bind JSON từ request body
+		if err := c.ShouldBindJSON(&requestData); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Xóa thông tin share screen của user khỏi map userShares
+		delete(userShares, requestData.UserID)
+
+		// Nếu tồn tại thông tin share screen của room, xóa user đó ra khỏi map con
+		if roomData, exists := roomShares[requestData.RoomID]; exists {
+			delete(roomData, requestData.UserID)
+			// Nếu sau khi xóa mà room không còn user nào chia sẻ màn hình, có thể xóa luôn room đó khỏi roomShares (tùy chọn)
+			if len(roomData) == 0 {
+				delete(roomShares, requestData.RoomID)
+			}
+		}
+
+		// Gửi thông báo tới các client trong room (trừ người gửi yêu cầu) rằng user đã dừng share screen
+		if usersInRoom, exists := rooms[requestData.RoomID]; exists {
+			for _, u := range usersInRoom {
+				if u.ID != requestData.UserID {
+					if conn, ok := clients[u.ID]; ok {
+						notification := gin.H{
+							"type":    "share_screen_stopped",
+							"message": "User stopped screen share",
+							"userId":  requestData.UserID,
+						}
+						if err := conn.WriteJSON(notification); err != nil {
+							fmt.Printf("Failed to notify user %s: %v\n", u.ID, err)
+						}
+					}
+				}
+			}
+		}
+
+		// Trả về phản hồi thành công cho client
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Share screen stopped and info removed",
+			"room_id": requestData.RoomID,
+		})
+	})
+
 	r.Static("/static", "./static")
 
 	r.Run(":8080") // Start server on port 8080

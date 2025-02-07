@@ -7,6 +7,9 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.1.2/adapter.min.js"
     integrity="sha512-l40eBFtXx+ve5RryIELC3y6/OM6Nu89mLGQd7fg1C93tN6XrkC3supb+/YiD/Y+B8P37kdJjtG1MT1kOO2VzxA=="
     crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.0"></script>
+
 </head>
 
 <body>
@@ -18,12 +21,15 @@
     <input id="room_id_join" type="text">
     <button id="join_room">Join Room</button>
     <button id="leave">Leave room</button>
+    <br>
+    <button id="blur-btn" type="button">Blur</button>
+    <button id="unblur-btn" type="button" hidden>Unblur</button>
     <div>
       <p id="count_participants">Số người tham gia:</p>
     </div>
     <div>
       <h2>Local stream</h2>
-      <video id="local-video" autoplay muted></video>
+      <video id="local-video" width="480" height="320" playsinline autoplay muted></video>
       <button id="toggle-mic">Tắt mic</button>
       <button id="toggle-camera">Tắt camera</button>
     </div>
@@ -31,13 +37,19 @@
       <h2>Remote echo stream</h2>
       <video id="remote-video" autoplay></video>
     </div>
+    <div>
+      <h2>ShareScreen</h2>
+      <button id="startButton">Start Screen Sharing</button>
+      <video id="screenVideo" autoplay></video>
+
+    </div>
   </div>
 
   <script type="module">
     const appId = '731e0a4787f65a16e604a685bda2d9f5';
 
     class CallsApp {
-      constructor(basePath = ' https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app') {
+      constructor(basePath = ' http://localhost:8080') {
         this.prefixPath = `${basePath}`;
       }
 
@@ -98,11 +110,21 @@
         console.log(result);
         return result;
       }
-      async GetnewTracks(peer_ssid) {
+      async GetnewTracks(peer_ssid, type) {
         const url = `${this.prefixPath}/sessions/tracks/getNew/?sessionId=${this.sessionId}`;
-        const body = {
-          session_id: peer_ssid
-        };
+        let body = "";
+        if (type === "normal") {
+          body = {
+            session_id: peer_ssid,
+            type: "normal"
+          };
+        }
+        else {
+          body = {
+            session_id: peer_ssid,
+            type: "screen"
+          };
+        }
         console.log("Body tracks Get:", body);
         const result = await this.sendRequest(url, body);
         console.log(result);
@@ -111,7 +133,7 @@
 
       // sendAnswerSDP sends an answer SDP if a renegotiation is required
       async sendAnswerSDP(answer) {
-        const url = ` https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/sessions/renegotiate/?sessionId=${this.sessionId}`;
+        const url = ` http://localhost:8080/sessions/renegotiate/?sessionId=${this.sessionId}`;
         const body = {
           sdp: answer,
         };
@@ -211,7 +233,7 @@
       };
 
       // Thực hiện gửi dữ liệu ngay lập tức
-      fetch('https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/register', {
+      fetch('http://localhost:8080/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -243,7 +265,7 @@
           user_id: userID
         };
 
-        fetch('https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/create-room', {
+        fetch('http://localhost:8080/create-room', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -270,7 +292,7 @@
     });
 
     //-------------------------------------------
-    async function AddNewTrackFromRemote(peer_ssid) {
+    async function AddNewTrackFromRemote(peer_ssid, type) {
       const remoteTracksPromise = new Promise((resolve) => {
         let tracks = [];
         self.pc.ontrack = (event) => {
@@ -284,7 +306,7 @@
       });
 
       // Gọi API để lấy các track từ peer mới
-      const newRemoteTracksResult = await self.app.GetnewTracks(peer_ssid);
+      const newRemoteTracksResult = await self.app.GetnewTracks(peer_ssid, type);
       if (newRemoteTracksResult.requiresImmediateRenegotiation) {
         switch (newRemoteTracksResult.sessionDescription.type) {
           case "offer":
@@ -304,15 +326,15 @@
 
       // Tạo phần tử div mới
       const videoContainer = document.createElement("div");
-      videoContainer.id = `peer-video-${peer_ssid}`;
+      videoContainer.id = `peer-${type === "normal" ? "video" : "screen"}-${peer_ssid}`;
       // Tạo tiêu đề cho video container (tùy chọn)
       const title = document.createElement("h2");
-      title.textContent = `Remote peer ${peer_ssid}`;
+      title.textContent = `Remote ${type === "normal" ? "" : "screen"} peer ${peer_ssid}`;
       videoContainer.appendChild(title);
 
       // Tạo phần tử video mới
       const remoteVideoElement = document.createElement("video");
-      remoteVideoElement.id = `remote-video-${peer_ssid}`;
+      remoteVideoElement.id = `remote-${type === "normal" ? "video" : "screen"}-${peer_ssid}`;
       remoteVideoElement.autoplay = true;
 
       // Thêm video vào container
@@ -335,9 +357,11 @@
 
       // Gán stream vào video
       remoteVideoElement.srcObject = remoteStream;
+
+
     }
     //----------
-    const socket = new WebSocket("wss://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/api/ws?user_id=" + self.app.sessionId); // Kết nối WebSocket
+    const socket = new WebSocket("ws://localhost:8080/api/ws?user_id=" + self.app.sessionId); // Kết nối WebSocket
 
     // Lắng nghe sự kiện khi WebSocket được mở
     socket.addEventListener("open", () => {
@@ -355,11 +379,18 @@
           // Gọi hàm nhận track từ peer mới
           const peer_ssid = data.user.id; // sessionID của peer mới tham gia
           //func
-          await AddNewTrackFromRemote(peer_ssid);
+          await AddNewTrackFromRemote(peer_ssid, "normal");
         } else if (data.type === "count_partis") {
           const count = data.count;
           const count_parti_element = document.getElementById("count_participants");
           count_parti_element.innerText = `Số người tham gia: ${count}`;
+
+        } else if (data.type === "new_share_screen") {
+          console.log("New Screen shared:", data.user);
+          const peer_ssid = data.user.id;
+          console.log("SCREEN:", peer_ssid);
+          await AddNewTrackFromRemote(peer_ssid, "screen");
+
 
         } else if (data.type === "a-peer-left") {
           // Lấy userId từ dữ liệu trả về
@@ -377,6 +408,16 @@
             console.log(`Removed video container for peer with ID: ${userId}`);
           } else {
             console.warn(`No video container found for peer with ID: ${userId}`);
+          }
+        } else if(data.type === "share_screen_stopped") {
+            const userId = data.userId;
+            const videoContainerId = `peer-screen-${userId}`;
+            const videoContainer = document.getElementById(videoContainerId);
+            if (videoContainer) {
+            videoContainer.remove();
+            console.log(`Removed screen container for peer with ID: ${userId}`);
+          } else {
+            console.warn(`No screen container found for peer with ID: ${userId}`);
           }
         }
       } catch (error) {
@@ -408,7 +449,7 @@
 
       try {
         // Thực hiện gọi API POST
-        const response = await fetch("https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/join-room", {
+        const response = await fetch("http://localhost:8080/join-room", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -429,17 +470,28 @@
         console.log("Joined room successfully:", data);
         alert(`Successfully joined room: ${data.room_id}`);
         const userList = data.userlist;  // giả sử data.users là mảng ID người dùng
-
+        const shareScreenList = data.shareScreenUsers;
         if (Array.isArray(userList)) {
           for (let peer_ssid of userList) {
             // Nếu peer_ssid không phải là bản thân (self.app.sessionId)
             if (peer_ssid !== self.app.sessionId) {
               console.log("Adding new track for:", peer_ssid);  // Kiểm tra ID đang xử lý
-              await AddNewTrackFromRemote(peer_ssid);
+              await AddNewTrackFromRemote(peer_ssid, "normal");
             }
           }
         } else {
           console.error("userList is not an array:", userList);
+        }
+        if (Array.isArray(shareScreenList)) {
+          for (let peer_ssid of shareScreenList) {
+            // Nếu peer_ssid không phải là bản thân (self.app.sessionId)
+            if (peer_ssid !== self.app.sessionId) {
+              console.log("Adding new track screen for:", peer_ssid);  // Kiểm tra ID đang xử lý
+              await AddNewTrackFromRemote(peer_ssid, "screen");
+            }
+          }
+        } else {
+          console.error("shareList is not an array:", shareScreenList);
         }
 
       } catch (error) {
@@ -449,22 +501,19 @@
     });
 
 
-    //Device
     // Get the video element and buttons
     const localVideo = document.getElementById("local-video");
     const toggleMicBtn = document.getElementById("toggle-mic");
     const toggleCameraBtn = document.getElementById("toggle-camera");
-
-    // Assuming you already have access to the local stream
-
-
-
     // Function to toggle the microphone
     toggleMicBtn.addEventListener("click", () => {
       const currentTrack = localStream.getAudioTracks()[0]; // Get the audio track
       if (currentTrack.enabled) {
         currentTrack.enabled = false; // Disable mic
         toggleMicBtn.innerText = "Bật mic";
+        /*const originalVideoTrack = localStream.getVideoTracks()[0];
+        const videoSender = self.pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        console.log("video sender: ", videoSender);*/
       } else {
         currentTrack.enabled = true; // Enable mic
         toggleMicBtn.innerText = "Tắt mic";
@@ -482,37 +531,284 @@
         toggleCameraBtn.innerText = "Tắt camera";
       }
     });
+    /*
+    //blur video:
+    async function blurVideoTrack(originalVideoStreamTrack) {
+      // Lấy kích thước từ track gốc (nếu có, nếu không sử dụng giá trị mặc định)
+      const videoElement = document.getElementById('local-video');
+
+      const settings = originalVideoStreamTrack.getSettings();
+      const width = settings.width || 640;
+      const height = settings.height || 480;
+
+      // Tạo một video element off-screen để phát stream gốc
+      const video = document.createElement('video');
+      video.playsInline = true;
+      video.muted = true;
+      video.width = width;
+      video.height = height;
+
+      // Tạo một MediaStream tạm thời chứa track gốc và gán cho video
+      const tempStream = new MediaStream([originalVideoStreamTrack]);
+      video.srcObject = tempStream;
+      await video.play();
+
+      // Tạo một canvas off-screen để vẽ video với hiệu ứng blur
+      const canvas = document.createElement('canvas');
+      canvas.height = videoElement.videoHeight;
+      canvas.width = videoElement.videoWidth;
+      const ctx = canvas.getContext('2d');
+
+      // Tùy chọn cho BodyPix
+      const options = {
+        multiplier: 0.75,
+        stride: 32,
+        quantBytes: 4
+      };
+
+      // Load model BodyPix
+      const net = await bodyPix.load(options);
+
+      // Hàm xử lý và vẽ hiệu ứng blur lên canvas cho mỗi frame
+      async function drawBlur() {
+        try {
+          // Lấy segmentation của người trong video
+          const segmentation = await net.segmentPerson(video);
+          // Các tham số hiệu ứng (có thể tùy chỉnh)
+          const backgroundBlurAmount = 6;
+          const edgeBlurAmount = 2;
+          const flipHorizontal = true;
+
+          // Vẽ hiệu ứng bokeh lên canvas
+          await bodyPix.drawBokehEffect(
+            canvas,
+            video,
+            segmentation,
+            backgroundBlurAmount,
+            edgeBlurAmount,
+            flipHorizontal
+          );
+        } catch (err) {
+          console.error("Error during drawBlur:", err);
+        }
+      }
+
+      // Hàm tick gọi drawBlur cho mỗi frame
+      function tick() {
+        drawBlur().then(() => {
+          requestAnimationFrame(tick);
+        });
+      }
+      tick();
+
+      // Lấy video track đã được xử lý từ canvas (30fps)
+      const blurredTrack = canvas.captureStream(30).getVideoTracks()[0];
+
+      // (Tùy chọn) Ghi đè phương thức stop nếu cần dừng việc cập nhật canvas
+      blurredTrack.stop = () => {
+        // Dừng việc gọi tick (nếu có lưu ID requestAnimationFrame, bạn có thể clear nó)
+        // Ở đây đơn giản gọi stop trên track gốc (không thay đổi gì thêm)
+        MediaStreamTrack.prototype.stop.call(originalVideoStreamTrack);
+      };
+
+      // (Tùy chọn) Ghi đè getSettings nếu cần
+      blurredTrack.getSettings = () => originalVideoStreamTrack.getSettings();
+
+      return blurredTrack;
+    }
+
+
+    ///
+    // Giả sử các biến sau đã được khởi tạo
+    // localStream: MediaStream từ getUserMedia
+    // self.pc: RTCPeerConnection hiện có
+    // Hàm blurVideoTrack(originalVideoStreamTrack) trả về một Promise chứa blurred video track
+
+    const blurBtn = document.getElementById('blur-btn');
+    const unblurBtn = document.getElementById('unblur-btn');
+    const videoElement = document.getElementById('local-video');
+
+    let isBlurEnabled = false;
+    let blurredTrack = null;
+
+    // Hàm toggleBlur để bật/tắt blur
+    async function toggleBlur() {
+      // Tìm RTCRtpSender của video trong RTCPeerConnection
+      const videoSender = self.pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (!videoSender) {
+        console.error("No video sender found");
+        return;
+      }
+
+      if (!isBlurEnabled) {
+        // Bật blur:
+        // Lấy video track gốc từ localStream
+        const originalVideoTrack = localStream.getVideoTracks()[0];
+        // Tạo blurred video track
+        blurredTrack = await blurVideoTrack(originalVideoTrack);
+        // Thay thế track gốc bằng blurredTrack trong RTCPeerConnection
+        await videoSender.replaceTrack(blurredTrack);
+        isBlurEnabled = true;
+        // Cập nhật giao diện nút
+        blurBtn.hidden = true;
+        unblurBtn.hidden = false;
+      } else {
+        // Tắt blur:
+        // Thay thế blurredTrack bằng video track gốc
+        const originalVideoTrack = localStream.getVideoTracks()[0];
+        await videoSender.replaceTrack(originalVideoTrack);
+        // Dừng blurredTrack để giải phóng tài nguyên
+        if (blurredTrack) {
+          blurredTrack.stop();
+          blurredTrack = null;
+        }
+        isBlurEnabled = false;
+        // Cập nhật giao diện nút
+        blurBtn.hidden = false;
+        unblurBtn.hidden = true;
+      }
+    }
+
+    // Gắn sự kiện cho nút blur và unblur (có thể cùng gọi hàm toggleBlur)
+    blurBtn.addEventListener('click', toggleBlur);
+    unblurBtn.addEventListener('click', toggleBlur);
+    */
+
+
 
     document.getElementById('leave').addEventListener('click', function () {
       // Gửi yêu cầu lên server bằng fetch
-    fetch(`https://da98-2001-ee0-5642-85e0-1021-c6c8-3984-b9a7.ngrok-free.app/sessions/TestCloseTrack/?user_id=${self.app.sessionId}&room_id=${my_room}`, { 
+      fetch(`http://localhost:8080/sessions/TestCloseTrack/?user_id=${self.app.sessionId}&room_id=${my_room}`, {
         method: 'GET',
-    })
+      })
         .then(response => {
-            if (!response.ok) {
-                throw new Error('Failed to leave the room');
-            }
-            return response.json();
+          if (!response.ok) {
+            throw new Error('Failed to leave the room');
+          }
+          return response.json();
         })
         .then(data => {
-            console.log('Leave response from server:', data);
-            if (data.message === "User left the room successfully") {
-               /* // Điều hướng về trang chủ hoặc thực hiện hành động khác
-                window.location.href = '/home'; // Redirect về trang chính (hoặc nơi bạn muốn) */
-                alert("Left the room");
-                const peerDivs = document.querySelectorAll('[id^="peer-video-"]'); // Chọn tất cả các div có id bắt đầu bằng 'peer-video-'
-                peerDivs.forEach(div => div.remove());
-                const count_parti_element = document.getElementById("count_participants");
-                count_parti_element.innerText = `Số người tham gia:--`;
-            } else {
-                alert(data.message || 'An error occurred while leaving the room');
-            }
+          console.log('Leave response from server:', data);
+          if (data.message === "User left the room successfully") {
+            /* // Điều hướng về trang chủ hoặc thực hiện hành động khác
+             window.location.href = '/home'; // Redirect về trang chính (hoặc nơi bạn muốn) */
+            alert("Left the room");
+            const peerDivs = document.querySelectorAll('[id^="peer-video-"]'); // Chọn tất cả các div có id bắt đầu bằng 'peer-video-'
+            peerDivs.forEach(div => div.remove());
+            const count_parti_element = document.getElementById("count_participants");
+            count_parti_element.innerText = `Số người tham gia:--`;
+          } else {
+            alert(data.message || 'An error occurred while leaving the room');
+          }
         })
         .catch(error => {
-            console.error('Error while leaving the room:', error);
+          console.error('Error while leaving the room:', error);
         });
     });
 
+
+    document.getElementById('startButton').addEventListener('click', async () => {
+      let screenStream = "";
+      try {
+        const displayMediaOptions = {
+          video: {
+            cursor: "always"
+          },
+          audio: true
+        };
+        screenStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+        const videoElement = document.getElementById('screenVideo');
+        const videoTrack = screenStream.getVideoTracks()[0];
+        videoTrack.addEventListener('ended', () => {
+          console.log('Screen share stopped by the user.');
+          videoElement.style.visibility = 'hidden';
+          const userData = {
+            user_id: self.app.sessionId,
+            room_id: my_room
+          };
+
+          fetch('http://localhost:8080/StopShareScreen', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(userData)
+          })
+            .then(response => {
+              if (!response.ok) {
+                throw new Error(`HTTP error! Status: ${response.status}`);
+              }
+              return response.json();
+            })
+            .then(data => {
+              console.log('Stop share response:', data);
+              // Xử lý giao diện, ví dụ: hiển thị thông báo thành công
+              alert(data.message || 'Screen share stopped successfully');
+            })
+            .catch(error => {
+              console.error('Error stopping share screen:', error);
+            });
+
+        });
+        videoElement.style.visibility = 'visible';
+        videoElement.srcObject = screenStream;
+      } catch (err) {
+        console.error("Error: " + err);
+      }
+      // Add sendonly transceivers to the PeerConnection
+      self.transceivers = screenStream.getTracks().map(track =>
+        self.pc.addTransceiver(track, {
+          direction: 'sendonly',
+        })
+      );
+      await self.pc.setLocalDescription(await self.pc.createOffer());
+
+      const SharetrackObjects = self.transceivers.map(transceiver => {
+        return {
+          location: 'local',
+          mid: transceiver.mid,
+          trackName: transceiver.sender.track.id,
+        };
+      });
+
+      const newLocalTracksResult = await self.app.newTracks(
+        SharetrackObjects,
+        self.pc.localDescription.sdp
+      );
+      await self.pc.setRemoteDescription(
+        new RTCSessionDescription(newLocalTracksResult.sessionDescription)
+      );
+
+      if (self.app && SharetrackObjects.length >= 2) {
+        const userData = {
+          id: self.app.sessionId,
+          roomid: my_room,
+          track_0: SharetrackObjects[0].trackName,
+          track_1: SharetrackObjects[1].trackName
+        };
+
+        //fetch lên route sharescreen xử lý:
+        fetch('http://localhost:8080/ShareScreen', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(userData)
+        })
+          .then(response => response.json())
+          .then(result => {
+            if (result.message) {
+              console.log(result.message, result.user);
+            } else {
+              console.error('Error:', result.error);
+            }
+          })
+          .catch(error => {
+            console.error('Fetch error:', error);
+          });
+      }
+
+    });
 
   </script>
 </body>
