@@ -43,11 +43,15 @@
       <video id="screenVideo" autoplay></video>
 
     </div>
+    <div id="chat-log"></div>
+    <input type="text" id="user-input" placeholder="Nhập tin nhắn của User" />
+    <button id="user-send">Send as User</button>
+
   </div>
 
   <script type="module">
     const appId = '731e0a4787f65a16e604a685bda2d9f5';
-
+    const API_BASE = `https://rtc.live.cloudflare.com/v1/apps/${appId}`;
     class CallsApp {
       constructor(basePath = ' http://localhost:8080') {
         this.prefixPath = `${basePath}`;
@@ -175,7 +179,30 @@
 
     // Create an instance of CallsApp (defined below)
     self.app = new CallsApp();
+    //
+    // Tạo Chat session và gửi lên server channel:
+    const chatSession = await createCallsSession();
+    let peerChats = {};
+    //myChannel để gửi thông tin đi qua webrtc
+    const myChannel = await createNewChannel(chatSession.sessionId, "local");
+    const channel1 = chatSession.peerConnection.createDataChannel(`chat-channel-${chatSession.sessionId}`, {
+      negotiated: true,
+      id: myChannel.dataChannels[0].id,
+    });
+    // Tạo sự kiện lắng nghe bản thân gửi tin nhắn:
+    const userInput = document.getElementById("user-input");
+    const userSend = document.getElementById("user-send");
+    userSend.addEventListener("click", () => {
+      const message = userInput.value.trim();
+      if (message !== "") {
+        // Gửi tin từ User1 qua channel1
+        channel1.send(message);
+        addMessage("You: ", message);
+        userInput.value = "";
+      }
+    });
 
+    //
     // Send the first offer and create a session
     await self.pc.setLocalDescription(await self.pc.createOffer());
     const newSessionResult = await self.app.newSession(self.pc.localDescription.sdp);
@@ -279,6 +306,7 @@
             } else {
               console.log(data.room_id);
               my_room = data.room_id;
+              SubmitChatToRoom();
               alert('Phòng được tạo thành công! Room ID: ' + data.room_id);
             }
           })
@@ -361,6 +389,7 @@
 
     }
     //----------
+    //WEB SOCKET
     const socket = new WebSocket("ws://localhost:8080/api/ws?user_id=" + self.app.sessionId); // Kết nối WebSocket
 
     // Lắng nghe sự kiện khi WebSocket được mở
@@ -409,16 +438,34 @@
           } else {
             console.warn(`No video container found for peer with ID: ${userId}`);
           }
-        } else if(data.type === "share_screen_stopped") {
-            const userId = data.userId;
-            const videoContainerId = `peer-screen-${userId}`;
-            const videoContainer = document.getElementById(videoContainerId);
-            if (videoContainer) {
+          if (peerChats[userId]) {
+            //close channel
+            peerChats[userId].channel.close();
+            delete peerChats[userId];
+            console.log(`Channel của user với sessionid ${userId} đã được xóa.`);
+          }
+        } else if (data.type === "share_screen_stopped") {
+          const userId = data.userId;
+          const videoContainerId = `peer-screen-${userId}`;
+          const videoContainer = document.getElementById(videoContainerId);
+          if (videoContainer) {
             videoContainer.remove();
             console.log(`Removed screen container for peer with ID: ${userId}`);
           } else {
             console.warn(`No screen container found for peer with ID: ${userId}`);
           }
+        } else if (data.type === "new_chat_join") {
+          console.log("new CHAT joined: ", data.user)
+          //VING
+          let _tempChannel = await createNewChannel(chatSession.sessionId, "remote", data.user.chatid);
+          let _tempChannelSubscribed = chatSession.peerConnection.createDataChannel(`chat-channel-subscribed-${data.user.chatid}`, {
+            negotiated: true,
+            id: _tempChannel.dataChannels[0].id,
+          });
+          peerChats[data.user.sessionID] = { sessionID: data.user.sessionID, chatID: data.user.chatid, channel: _tempChannelSubscribed };
+          addEventDataChannel(peerChats[data.user.sessionID]);
+
+
         }
       } catch (error) {
         console.error("Error processing WebSocket message:", error);
@@ -437,6 +484,7 @@
     // join room:
     const room_id_input = document.getElementById("room_id_join");
     const join_room_btn = document.getElementById("join_room");
+    ////// JOIN
     join_room_btn.addEventListener("click", async function () {
       const room_id = room_id_input.value; // Lấy giá trị room_id từ input
       const user_id = self.app.sessionId; // Lấy sessionId từ self.app
@@ -468,6 +516,8 @@
 
         const data = await response.json();
         console.log("Joined room successfully:", data);
+        const ChatList = await SubmitChatToRoom();
+        console.log(ChatList, typeof (ChatList));
         alert(`Successfully joined room: ${data.room_id}`);
         const userList = data.userlist;  // giả sử data.users là mảng ID người dùng
         const shareScreenList = data.shareScreenUsers;
@@ -492,6 +542,25 @@
           }
         } else {
           console.error("shareList is not an array:", shareScreenList);
+        }
+
+        if (Array.isArray(ChatList)) {
+          for (let user of ChatList) {
+            //
+            if (user.id !== chatSession.sessionId) {
+              console.log("Adding new chat channel for:", user);  // Kiểm tra ID đang xử lý
+              //VING
+              let _tempChannel = await createNewChannel(chatSession.sessionId, "remote", user.id);
+              let _tempChannelSubscribed = chatSession.peerConnection.createDataChannel(`chat-channel-subscribed-${user.id}`, {
+                negotiated: true,
+                id: _tempChannel.dataChannels[0].id,
+              });
+              peerChats[user.userid] = { sessionID: user.userid, chatID: user.id, channel: _tempChannelSubscribed };
+              addEventDataChannel(peerChats[user.userid]);
+            }
+          }
+        } else {
+          console.error("ChatList is not an array:", ChatList);
         }
 
       } catch (error) {
@@ -697,6 +766,14 @@
             peerDivs.forEach(div => div.remove());
             const count_parti_element = document.getElementById("count_participants");
             count_parti_element.innerText = `Số người tham gia:--`;
+            // xóa channels cũ:
+            Object.keys(peerChats).forEach((key) => {
+              if (peerChats[key].channel) {
+                peerChats[key].channel.close();
+              }
+              delete peerChats[key];
+            });
+            document.getElementById("chat-log").textContent = "";
           } else {
             alert(data.message || 'An error occurred while leaving the room');
           }
@@ -810,7 +887,146 @@
 
     });
 
+    // ---------------------------
+    // HÀM HỖ TRỢ: Hiển thị tin nhắn lên giao diện chat
+    // ---------------------------
+    const chatLog = document.getElementById("chat-log");
+    function addMessage(user, message) {
+      const p = document.createElement("p");
+      p.textContent = `${user}: ${message}`;
+      chatLog.appendChild(p);
+      // Tự động cuộn xuống dưới
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+    //const chatSession = await createCallsSession();
+    console.log("CHAT SESSION: ", chatSession.sessionId);
+
+    async function SubmitChatToRoom() {
+      const userData = {
+        chatid: chatSession.sessionId,
+        channelname: `chat-channel-${chatSession.sessionId}`,
+        sessionID: self.app.sessionId,
+        roomID: my_room
+      };
+
+      const response = await fetch('http://localhost:8080/InitDcRoom', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(userData)
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        alert(`Error: ${errorData.error}`);
+        return;
+      }
+      const data = await response.json();
+      return data.chat_list;
+
+    }
+
+    async function createCallsSession() {
+      const peerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+        bundlePolicy: "max-bundle",
+      });
+
+      // Tạo data channel dùng để nhận các sự kiện từ server (không bắt buộc dùng cho chat)
+      const dc = peerConnection.createDataChannel("server-events");
+
+      // Tạo offer và đặt làm local description
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      // Gửi offer tới Cloudflare để khởi tạo phiên
+      const response = await fetch(`http://localhost:8080/NewChatSession`, {
+        method: "POST",
+        body: JSON.stringify({
+          SDP: peerConnection.localDescription.sdp,
+        }),
+      }).then((res) => res.json());
+      const sessionId = response.sessionId;
+      const sessionDescription = response.sessionDescription;
+
+      // Chờ ICE connection được thiết lập (timeout 5s)
+      const connected = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("ICE connection timeout"));
+        }, 5000);
+        peerConnection.addEventListener("iceconnectionstatechange", () => {
+          if (peerConnection.iceConnectionState === "connected") {
+            clearTimeout(timeout);
+            resolve();
+          }
+        });
+      });
+
+      await peerConnection.setRemoteDescription(sessionDescription);
+      await connected;
+      return { peerConnection, sessionId, dc };
+    }
+
+    async function createNewChannel(chatSessionId, locate, sessionidSub) {
+      let _body;
+      if (sessionidSub !== null && locate === "remote") {
+        _body = JSON.stringify({
+          dataChannels: [
+            { location: "remote", sessionId: sessionidSub, dataChannelName: `chat-channel-${sessionidSub}` }
+          ],
+        });
+      } else {
+        _body = JSON.stringify({
+          dataChannels: [
+            { location: locate, dataChannelName: `chat-channel-${chatSessionId}` } //location có thể là remote
+          ],
+        });
+      }
+      const myChannel = await fetch(
+        `http://localhost:8080/newChannelSub/?sessionID=${chatSessionId}`,
+        {
+          method: "POST",
+          body: _body,
+        }
+      ).then((res) => res.json());
+      return myChannel;
+    }
+
+
+    async function addEventDataChannel(Sub) {
+      Sub.channel.addEventListener("message", (evt) => {
+        addMessage(`User ${Sub.sessionID} `, evt.data);
+      });
+
+    }
   </script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    #chat-log {
+      border: 1px solid #ccc;
+      height: 300px;
+      padding: 10px;
+      overflow-y: auto;
+      margin-bottom: 20px;
+    }
+
+    .user-section {
+      margin-bottom: 20px;
+    }
+
+    input[type="text"] {
+      width: 70%;
+      padding: 5px;
+    }
+
+    button {
+      padding: 5px 10px;
+    }
+  </style>
 </body>
 
 </html>

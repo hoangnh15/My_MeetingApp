@@ -39,10 +39,17 @@ type UserShare struct {
 	Track0 string `json:"track_0"` // tên track 0
 	Track1 string `json:"track_1"` // tên track 1
 }
+type UserChat struct {
+	ID               string `json:"id"`
+	ChannelName      string `json:"dataChannelName"`
+	AssociatedUserID string `json:"userid"`
+}
 
 // RoomShares quản lý thông tin chia sẻ màn hình theo room.
 // Key: room id, Value: map từ user id đến thông tin UserShare.
+var userChats = make(map[string]UserChat)
 var roomShares = make(map[string]map[string]UserShare)
+var roomChats = make(map[string][]UserChat)
 
 // In-memory storage for simplicity (replace with a database in production)
 var users = make(map[string]User) // Maps user ID to user
@@ -155,7 +162,7 @@ func createSession(c *gin.Context) {
 		return
 	}
 	// Parse respBody thành đối tượng JSON
-	fmt.Println(obj)
+	//fmt.Println(obj)
 	c.JSON(http.StatusOK, obj)
 }
 
@@ -218,7 +225,7 @@ func addTrack(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Error adding track: %v", err)})
 		return
 	}
-	fmt.Println("Cloudflare API Response:", string(respBody))
+	//fmt.Println("Cloudflare API Response:", string(respBody))
 
 	// Gửi kết quả trả về client
 	c.Data(http.StatusOK, "application/json", respBody)
@@ -302,7 +309,7 @@ func getTrack(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Error adding track: %v", err)})
 		return
 	}
-	fmt.Println("Cloudflare API Response:", string(respBody))
+	//fmt.Println("Cloudflare API Response:", string(respBody))
 
 	// Gửi kết quả trả về client
 	c.Data(http.StatusOK, "application/json", respBody)
@@ -385,8 +392,18 @@ func leaveRoom(c *gin.Context) {
 			break
 		}
 	}
+	if rc, exists := roomChats[roomID]; exists {
+		// Lọc bỏ các UserChat có AssociatedUserID trùng với userID
+		newRC := []UserChat{}
+		for _, chat := range rc {
+			if chat.AssociatedUserID != userID {
+				newRC = append(newRC, chat)
+			}
+		}
+		roomChats[roomID] = newRC
+	}
 
-	// Notify remaining users in the room (if WebSocket is implemented)
+	// Notify remaining users in the room
 	for _, u := range rooms[roomID] {
 		if conn, ok := clients[u.ID]; ok {
 			notification := gin.H{
@@ -653,6 +670,128 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Share screen stopped and info removed",
 			"room_id": requestData.RoomID,
+		})
+	})
+	r.POST("/NewChatSession", func(c *gin.Context) {
+		// Xử lý CORS
+		handleCORS(c)
+
+		// Lấy offer SDP từ client
+		var offerSDP struct {
+			SDP string `json:"SDP"`
+		}
+		if err := c.ShouldBindJSON(&offerSDP); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+			return
+		}
+
+		// Tạo body gửi lên Cloudflare API
+		body := map[string]interface{}{
+			"sessionDescription": map[string]interface{}{
+				"type": "offer",
+				"sdp":  offerSDP.SDP,
+			},
+		}
+
+		// Gửi yêu cầu tạo session đến Cloudflare
+		url := fmt.Sprintf("%s/apps/%s/sessions/new", cloudflareAPIBase, appId)
+		respBody, err := sendRequest(url, "POST", body)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Error creating session: %v", err)})
+			return
+		}
+		var obj CreateSessionResponse
+		if err := json.Unmarshal([]byte(string(respBody)), &obj); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to parse JSON"})
+			return
+		}
+		// Parse respBody thành đối tượng JSON
+		c.JSON(http.StatusOK, obj)
+	})
+	r.POST("/newChannelSub", func(c *gin.Context) {
+		sessionID := c.Query("sessionID")
+		if sessionID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "sessionID is required"})
+			return
+		}
+		// Bind JSON từ request body
+		var requestData map[string]interface{}
+		if err := c.ShouldBindJSON(&requestData); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+			return
+		}
+		url := fmt.Sprintf("%s/apps/%s/sessions/%s/datachannels/new", cloudflareAPIBase, appId, sessionID)
+
+		// Gọi sendRequest để chuyển tiếp yêu cầu đến Cloudflare Calls
+		respBody, err := sendRequest(url, "POST", requestData)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Error creating data channel: %v", err)})
+			return
+		}
+
+		// Gửi phản hồi trả về client (đã được parse từ Cloudflare)
+		c.Data(http.StatusOK, "application/json", respBody)
+
+	})
+	r.POST("/InitDcRoom", func(c *gin.Context) {
+		// Xử lý CORS
+		handleCORS(c)
+
+		// Định nghĩa kiểu nhận request JSON từ FE
+		var reqBody struct {
+			ChatID      string `json:"chatid"`      // ID riêng cho UserChat
+			ChannelName string `json:"channelname"` // Tên channel data
+			SessionID   string `json:"sessionID"`   // ID của user (session ID)
+			RoomID      string `json:"roomID"`      // ID của room
+		}
+
+		// Bind JSON từ request body
+		if err := c.ShouldBindJSON(&reqBody); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+			return
+		}
+
+		// Tạo đối tượng UserChat từ dữ liệu nhận được
+		userChat := UserChat{
+			ID:               reqBody.ChatID,
+			ChannelName:      reqBody.ChannelName,
+			AssociatedUserID: reqBody.SessionID,
+		}
+
+		// Lưu thông tin vào map userChats (key là ChatID)
+		userChats[reqBody.ChatID] = userChat
+
+		// Kiểm tra và khởi tạo map con cho room nếu chưa có
+		if _, exists := roomChats[reqBody.RoomID]; !exists {
+			roomChats[reqBody.RoomID] = []UserChat{}
+		}
+		// Thêm thông tin UserChat vào danh sách trong room
+		roomChats[reqBody.RoomID] = append(roomChats[reqBody.RoomID], userChat)
+
+		// (Tùy chọn) In ra log để kiểm tra
+		fmt.Printf("RoomChats updated for room %s: %+v\n", reqBody.RoomID, roomChats[reqBody.RoomID])
+		// Gửi thông báo tới các client trong room (trừ người mới)
+		for _, u := range rooms[reqBody.RoomID] {
+			if u.ID != reqBody.SessionID {
+				if conn, ok := clients[u.ID]; ok {
+					notification := gin.H{
+						"type":    "new_chat_join",
+						"message": "New user chat for the room",
+						"user":    reqBody,
+					}
+					if err := conn.WriteJSON(notification); err != nil {
+						fmt.Println("Failed to notify user:", u.ID, err)
+					}
+				}
+			}
+		}
+
+		// Gửi phản hồi thành công cho client khi init phòng
+		c.JSON(http.StatusOK, gin.H{
+			"message":   "Room initialized with chat info",
+			"room_id":   reqBody.RoomID,
+			"userChat":  userChat,
+			"chat_list": roomChats[reqBody.RoomID],
 		})
 	})
 
